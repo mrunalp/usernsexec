@@ -144,13 +144,16 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 
 	// About to call fork.
 	// No more allocation or calls of non-assembly functions.
+	BeforeFork()
 	r1, _, err1 = RawSyscall6(SYS_CLONE, uintptr(SIGCHLD)|sys.Cloneflags, 0, 0, 0, 0, 0)
 	if err1 != 0 {
+		AfterFork()
 		return 0, err1
 	}
 
 	if r1 != 0 {
 		// parent; return PID
+		AfterFork()
 		return int(r1), 0
 	}
 
