@@ -14,18 +14,18 @@ func main() {
 	}
 
 	uidMappings := []forklib.IdMap{
-		forklib.IdMap{
+		{
 			ContainerId: 0,
-			HostId: 1013,
-			Size: 1,
+			HostId:      1013,
+			Size:        1,
 		},
 	}
 
 	gidMappings := []forklib.IdMap{
-		forklib.IdMap{
+		{
 			ContainerId: 0,
-			HostId: 1013,
-			Size: 1,
+			HostId:      1013,
+			Size:        1,
 		},
 	}
 

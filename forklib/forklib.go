@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"io/ioutil"
 	"runtime"
-	. "syscall"
 	"strings"
+	. "syscall"
 	"unsafe"
 )
 
@@ -119,7 +119,7 @@ error:
 	return 0, err
 }
 
-func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr *ProcAttr, sys *SysProcAttr, pipe int, wait int) (pid int, err Errno) {
+func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr *ProcAttr, sys *SysProcAttr, child int, parent int) (pid int, err Errno) {
 	// Declare all variables at top in case any
 	// declarations require heap allocation (e.g., err1).
 	var (
@@ -127,6 +127,7 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 		err1   Errno
 		nextfd int
 		i      int
+		lzero  uintptr
 	)
 
 	// Guard against side effects of shuffling fds below.
@@ -157,9 +158,15 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 		return int(r1), 0
 	}
 
-	Close(pipe)
 	// Fork succeeded, now in child.
-	Read(wait, make([]byte, 1))
+	if _, _, err1 = RawSyscall(SYS_CLOSE, uintptr(child), 0, 0); err != 0 {
+		goto childerror
+	}
+
+	_, _, err1 = RawSyscall(SYS_READ, uintptr(parent), uintptr(unsafe.Pointer(&lzero)), uintptr(1))
+	if err1 != 0 {
+		goto childerror
+	}
 
 	// Parent death signal
 	if sys.Pdeathsig != 0 {
@@ -244,13 +251,13 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 
 	// Pass 1: look for fd[i] < i and move those up above len(fd)
 	// so that pass 2 won't stomp on an fd it needs later.
-	if pipe < nextfd {
-		_, _, err1 = RawSyscall(SYS_DUP2, uintptr(pipe), uintptr(nextfd), 0)
+	if child < nextfd {
+		_, _, err1 = RawSyscall(SYS_DUP2, uintptr(child), uintptr(nextfd), 0)
 		if err1 != 0 {
 			goto childerror
 		}
 		RawSyscall(SYS_FCNTL, uintptr(nextfd), F_SETFD, FD_CLOEXEC)
-		pipe = nextfd
+		child = nextfd
 		nextfd++
 	}
 	for i = 0; i < len(fd); i++ {
@@ -262,7 +269,7 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 			RawSyscall(SYS_FCNTL, uintptr(nextfd), F_SETFD, FD_CLOEXEC)
 			fd[i] = nextfd
 			nextfd++
-			if nextfd == pipe { // don't stomp on pipe
+			if nextfd == child { // don't stomp on pipe
 				nextfd++
 			}
 		}
@@ -323,7 +330,7 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 
 childerror:
 	// send error code on pipe
-	RawSyscall(SYS_WRITE, uintptr(pipe), uintptr(unsafe.Pointer(&err1)), unsafe.Sizeof(err1))
+	RawSyscall(SYS_WRITE, uintptr(child), uintptr(unsafe.Pointer(&err1)), unsafe.Sizeof(err1))
 	for {
 		RawSyscall(SYS_EXIT, 253, 0, 0)
 	}
@@ -355,35 +362,34 @@ func forkExecPipe(p []int) (err error) {
 	return
 }
 
-
 // Write UID/GID mappings for a process.
 func writeUserMappings(pid int, uidMappings, gidMappings []IdMap) error {
-        if len(uidMappings) > 5 || len(gidMappings) > 5 {
-                return fmt.Errorf("Only 5 uid/gid mappings are supported by the kernel")
-        }
+	if len(uidMappings) > 5 || len(gidMappings) > 5 {
+		return fmt.Errorf("Only 5 uid/gid mappings are supported by the kernel")
+	}
 
-        uidMapStr := make([]string, len(uidMappings))
-        for i, um := range uidMappings {
-                uidMapStr[i] = fmt.Sprintf("%v %v %v", um.ContainerId, um.HostId, um.Size)
-        }
+	uidMapStr := make([]string, len(uidMappings))
+	for i, um := range uidMappings {
+		uidMapStr[i] = fmt.Sprintf("%v %v %v", um.ContainerId, um.HostId, um.Size)
+	}
 
-        gidMapStr := make([]string, len(gidMappings))
-        for i, gm := range gidMappings {
-                gidMapStr[i] = fmt.Sprintf("%v %v %v", gm.ContainerId, gm.HostId, gm.Size)
-        }
+	gidMapStr := make([]string, len(gidMappings))
+	for i, gm := range gidMappings {
+		gidMapStr[i] = fmt.Sprintf("%v %v %v", gm.ContainerId, gm.HostId, gm.Size)
+	}
 
-        uidMap := []byte(strings.Join(uidMapStr, "\n"))
-        gidMap := []byte(strings.Join(gidMapStr, "\n"))
+	uidMap := []byte(strings.Join(uidMapStr, "\n"))
+	gidMap := []byte(strings.Join(gidMapStr, "\n"))
 
-        uidMappingsFile := fmt.Sprintf("/proc/%v/uid_map", pid)
-        gidMappingsFile := fmt.Sprintf("/proc/%v/gid_map", pid)
+	uidMappingsFile := fmt.Sprintf("/proc/%v/uid_map", pid)
+	gidMappingsFile := fmt.Sprintf("/proc/%v/gid_map", pid)
 
-        if err := ioutil.WriteFile(uidMappingsFile, uidMap, 0644); err != nil {
-                return err
-        }
-        if err := ioutil.WriteFile(gidMappingsFile, gidMap, 0644); err != nil {
-                return err
-        }
+	if err := ioutil.WriteFile(uidMappingsFile, uidMap, 0644); err != nil {
+		return err
+	}
+	if err := ioutil.WriteFile(gidMappingsFile, gidMap, 0644); err != nil {
+		return err
+	}
 
-        return nil
+	return nil
 }
