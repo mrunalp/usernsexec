@@ -5,12 +5,13 @@ import (
 	"io/ioutil"
 	"runtime"
 	. "syscall"
+	"strings"
 	"unsafe"
 )
 
 func BeforeFork()
 func AfterFork()
-func ForkExecNew(argv0 string, argv []string, attr *ProcAttr) (pid int, err error) {
+func ForkExecNew(argv0 string, argv []string, attr *ProcAttr, uidMappings, gidMappings []IdMap) (pid int, err error) {
 	var p [2]int
 	var n int
 	var err1 Errno
@@ -80,7 +81,7 @@ func ForkExecNew(argv0 string, argv []string, attr *ProcAttr) (pid int, err erro
 	}
 	ForkLock.Unlock()
 
-	if err := writeUserMappings(pid); err != nil {
+	if err := writeUserMappings(pid, uidMappings, gidMappings); err != nil {
 		return 0, err
 	}
 	// Read child error status from pipe.
@@ -354,17 +355,35 @@ func forkExecPipe(p []int) (err error) {
 	return
 }
 
+
 // Write UID/GID mappings for a process.
-func writeUserMappings(pid int) error {
-	uidMappingsFile := fmt.Sprintf("/proc/%d/uid_map", pid)
-	gidMappingsFile := fmt.Sprintf("/proc/%d/gid_map", pid)
+func writeUserMappings(pid int, uidMappings, gidMappings []IdMap) error {
+        if len(uidMappings) > 5 || len(gidMappings) > 5 {
+                return fmt.Errorf("Only 5 uid/gid mappings are supported by the kernel")
+        }
 
-	if err := ioutil.WriteFile(uidMappingsFile, []byte("0 1013 1"), 0644); err != nil {
-		return err
-	}
-	if err := ioutil.WriteFile(gidMappingsFile, []byte("0 1013 1"), 0644); err != nil {
-		return err
-	}
+        uidMapStr := make([]string, len(uidMappings))
+        for i, um := range uidMappings {
+                uidMapStr[i] = fmt.Sprintf("%v %v %v", um.ContainerId, um.HostId, um.Size)
+        }
 
-	return nil
+        gidMapStr := make([]string, len(gidMappings))
+        for i, gm := range gidMappings {
+                gidMapStr[i] = fmt.Sprintf("%v %v %v", gm.ContainerId, gm.HostId, gm.Size)
+        }
+
+        uidMap := []byte(strings.Join(uidMapStr, "\n"))
+        gidMap := []byte(strings.Join(gidMapStr, "\n"))
+
+        uidMappingsFile := fmt.Sprintf("/proc/%v/uid_map", pid)
+        gidMappingsFile := fmt.Sprintf("/proc/%v/gid_map", pid)
+
+        if err := ioutil.WriteFile(uidMappingsFile, uidMap, 0644); err != nil {
+                return err
+        }
+        if err := ioutil.WriteFile(gidMappingsFile, gidMap, 0644); err != nil {
+                return err
+        }
+
+        return nil
 }
